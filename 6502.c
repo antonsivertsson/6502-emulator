@@ -65,7 +65,7 @@ int resetCPU() {
   // Reset all registers
   cpu.REG_PC &= 0x0000;
   cpu.REG_PS &= 0x00;
-  cpu.REG_SP &= 0x00;
+  cpu.REG_SP &= 0xFF; // Stack initialized after reset at mem loc 0x10FF
   cpu.REG_A &= 0x00;
   cpu.REG_X &= 0x00;
   cpu.REG_Y &= 0x00;
@@ -139,24 +139,42 @@ int store(unsigned char value, Addr_mode addressing_mode, unsigned short operand
   return 0;
 }
 
+int compare(Addr_mode address_mode, unsigned char value, unsigned short operand) {
+  unsigned char mem_value = memory[getMemAddress(address_mode, operand)];
+  unsigned char result = value - mem_value;
+  modifyNegativeFlag(result);
+  modifyZeroFlag(result);
+  if (value >= mem_value) {
+    setFlag(FLAG_C);
+  } else {
+    clearFlag(FLAG_C);
+  }
+  return 0;
+}
+
 // Goes to a place in memory and increments the value
-int incrementInMemory(Addr_mode address_mode, unsigned char operand) {
+unsigned char incrementInMemory(Addr_mode address_mode, unsigned char operand) {
   unsigned short mem_address = getMemAddress(address_mode, operand);
   memory[mem_address]++;
   unsigned char result = memory[mem_address];
   modifyNegativeFlag(result);
   modifyZeroFlag(result);
-  return 0;
+  return result;
 }
 
 // Goes to a place in memory and increments the value
-int decrementInMemory(Addr_mode address_mode, unsigned char operand) {
+unsigned char decrementInMemory(Addr_mode address_mode, unsigned char operand) {
   unsigned short mem_address = getMemAddress(address_mode, operand);
   memory[mem_address]--;
   unsigned char result = memory[mem_address];
   modifyNegativeFlag(result);
   modifyZeroFlag(result);
-  return 0;
+  return result;
+}
+
+int pushToStack(unsigned char value) {
+  memory[0x1000 | cpu.REG_SP] = value;
+  cpu.REG_SP--;
 }
 
 // Reads next byte at program counter and increments the program counter
@@ -367,6 +385,21 @@ void readInstruction() {
 
   switch (opcode)
   {
+
+    // BRK
+    case 0x00:
+      setFlag(FLAG_B);
+      cpu.isRunning = 0;
+      // Push Program counter to to stack in low endian (high byte first, then the low)
+      pushToStack(cpu.REG_PC >> 8 & 0xFF);
+      pushToStack(cpu.REG_PC & 0xFF);
+      // push the process registry with break flag set
+      pushToStack(cpu.REG_PS);
+
+      // Set program counter to reset vector at 0xFFFE - 0xFFFF (low endian)
+      cpu.REG_PC = memory[0xFFFF] << 8 | memory[0xFFFE];
+      break;
+
     // ORA
     case 0x01:
     case 0x05:
@@ -377,12 +410,6 @@ void readInstruction() {
     case 0x19:
     case 0x1D:
       // TODO: Implement ORA
-      break;
-
-    case 0x00: // BRK
-      setFlag(FLAG_B);
-      setFlag(FLAG_I);
-      cpu.isRunning = 0;
       break;
 
     // LDA
@@ -494,6 +521,144 @@ void readInstruction() {
       modifyZeroFlag(cpu.REG_Y);
       break;
 
+    // -- Transfer functions --
+
+    // TAX
+    case 0xAA:
+      cpu.REG_X = cpu.REG_A;
+      modifyNegativeFlag(cpu.REG_X);
+      modifyZeroFlag(cpu.REG_X);
+      break;
+
+    // TXA
+    case 0x8A:
+      cpu.REG_A = cpu.REG_X;
+      modifyNegativeFlag(cpu.REG_A);
+      modifyZeroFlag(cpu.REG_A);
+      break;
+
+    // TAY
+    case 0xA8:
+      cpu.REG_Y = cpu.REG_A;
+      modifyNegativeFlag(cpu.REG_Y);
+      modifyZeroFlag(cpu.REG_Y);
+      break;
+
+    // TYA
+    case 0x98:
+      cpu.REG_A = cpu.REG_Y;
+      modifyNegativeFlag(cpu.REG_A);
+      modifyZeroFlag(cpu.REG_A);
+      break;
+
+    // TXS
+    case 0x9A:
+      cpu.REG_SP = cpu.REG_X;
+      // Don't modify flags, since nothing stored in X, Y or A
+      break;
+
+    // TSX
+    case 0xBA:
+      cpu.REG_X = cpu.REG_SP;
+      modifyNegativeFlag(cpu.REG_X);
+      modifyZeroFlag(cpu.REG_X);
+      break;
+
+    // -- Stack ops --
+
+    // PHA
+    case 0x48:
+      memory[0x1000 | cpu.REG_SP] = cpu.REG_A;
+      cpu.REG_SP--;
+      break;
+
+    // PHP
+    case 0x08:
+      memory[0x1000 | cpu.REG_SP] = cpu.REG_PS;
+      cpu.REG_SP--;
+      break;
+
+    // PLA
+    case 0x68:
+      cpu.REG_SP++;
+      cpu.REG_A = memory[0x1000 | cpu.REG_SP];
+      memory[0x10 | cpu.REG_SP] = 0x00;
+      modifyNegativeFlag(cpu.REG_A);
+      modifyZeroFlag(cpu.REG_A);
+      break;
+
+    // PLP
+    case 0x28:
+      cpu.REG_SP++;
+      cpu.REG_PS = memory[0x1000 | cpu.REG_SP];
+      memory[0x10 | cpu.REG_SP] = 0x00;
+      break;
+
+    // -- Flag ops --
+    
+    // SEC
+    case 0x38:
+      setFlag(FLAG_C);
+      break;
+
+    // SED
+    case 0xF8:
+      setFlag(FLAG_D);
+      break;
+
+    // SEI
+    case 0x78:
+      setFlag(FLAG_I);
+      break;
+
+    // CLC
+    case 0x18:
+      clearFlag(FLAG_C);
+      break;
+
+    // CLD
+    case 0xD8:
+      clearFlag(FLAG_D);
+      break;
+
+    // CLI
+    case 0x58:
+      clearFlag(FLAG_I);
+      break;
+
+    // CLV
+    case 0xB8:
+      clearFlag(FLAG_V);
+      break;
+
+
+    // -- Comparison functions --
+
+    // CMP
+    case 0xC1:
+    case 0xC5:
+    case 0xC9:
+    case 0xCD:
+    case 0xD1:
+    case 0xD5:
+    case 0xD9:
+    case 0xDD:
+      compare(address_mode, cpu.REG_A, readNextByte());
+      break;
+
+    // CPX
+    case 0xE0:
+    case 0xE4:
+    case 0xEC:
+      compare(address_mode, cpu.REG_X, readNextByte());
+      break;
+
+    // CPY
+    case 0xC0:
+    case 0xC4:
+    case 0xCC:
+      compare(address_mode, cpu.REG_Y, readNextByte());
+      break;
   }
 }
 
@@ -505,9 +670,3 @@ int runCPU() {
   }
   return 0;
 }
-
-// int main() {
-//   cpu.initCPU = initCPU;
-//   cpu.runCPU = runCPU;
-//   return 0;
-// }
